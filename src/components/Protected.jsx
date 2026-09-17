@@ -1,0 +1,2 @@
+import React from "react"; import {Navigate,useLocation} from "react-router-dom"; import {useApp} from "../context/AppContext";
+export function ProtectedRoute({children,admin=false}){const {currentUser,adminSession}=useApp();const loc=useLocation();const activeUser=admin?adminSession:currentUser;if(!activeUser)return <Navigate to={admin?"/admin/login":"/login"} state={{from:loc.pathname}} replace={true}/>;if(admin&&adminSession?.role!=="admin")return <Navigate to="/" replace/>;return children}
