@@ -280,6 +280,6 @@ The main objective of PetMart is to develop a professional, responsive e-commerc
 
 ## 👩‍💻 Author
 
-**I. Asritha **
+I. Asritha 
 
 
