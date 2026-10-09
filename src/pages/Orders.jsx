@@ -15,13 +15,16 @@ import { useApp } from "../context/AppContext";
 import { PageTitle, Empty } from "../components/Common";
 
 export default function Orders() {
-  const { orders, currentUser, cancelOrder } = useApp();
+  const { orders, userOrders: contextUserOrders, currentUser, cancelOrder } = useApp();
   const [selectedInvoiceOrder, setSelectedInvoiceOrder] = useState(null);
 
-  // Filter orders by current user email
-  const userOrders = orders.filter(
-    (o) => o.email?.toLowerCase() === currentUser?.email?.toLowerCase()
-  );
+  // Filter orders strictly belonging to the currently logged in customer
+  const userOrders = contextUserOrders || orders.filter((o) => {
+    if (o.userId && currentUser?.id) {
+      return o.userId === currentUser.id;
+    }
+    return Boolean(o.email && currentUser?.email && o.email.toLowerCase() === currentUser.email.toLowerCase());
+  });
 
   const getStatusColor = (status) => {
     switch (status) {

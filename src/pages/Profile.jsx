@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   User,
@@ -25,6 +25,7 @@ export default function Profile() {
     deleteAddress,
     logout,
     orders,
+    userOrders: contextUserOrders,
     wishlist,
     notify
   } = useApp();
@@ -53,12 +54,29 @@ export default function Profile() {
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
 
+  // Keep form inputs strictly in sync with the authenticated user (prevent state leakage)
+  useEffect(() => {
+    if (currentUser) {
+      setNameInput(currentUser.name || "");
+      setPhoneInput(currentUser.phone || "");
+      setEditMode(false);
+      setNewAddr((prev) => ({
+        ...prev,
+        fullName: currentUser.name || "",
+        phone: currentUser.phone || ""
+      }));
+    }
+  }, [currentUser?.id, currentUser?.name, currentUser?.phone]);
+
   if (!currentUser) return null;
 
-  // Filter orders made by this user
-  const userOrders = orders.filter(
-    (o) => o.email.toLowerCase() === currentUser.email.toLowerCase()
-  );
+  // Filter orders strictly made by this authenticated user
+  const userOrders = contextUserOrders || orders.filter((o) => {
+    if (o.userId && currentUser?.id) {
+      return o.userId === currentUser.id;
+    }
+    return Boolean(o.email && currentUser?.email && o.email.toLowerCase() === currentUser.email.toLowerCase());
+  });
 
   const handleSaveProfile = (e) => {
     e.preventDefault();

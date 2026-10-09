@@ -68,9 +68,12 @@ export default function ManageUsers() {
             <tbody>
               {filteredUsers.length > 0 ? (
                 filteredUsers.map((user) => {
-                  const userOrdersCount = orders.filter(
-                    (o) => o.email?.toLowerCase() === user.email?.toLowerCase()
-                  ).length;
+                  const userOrdersCount = orders.filter((o) => {
+                    if (o.userId && user.id) {
+                      return o.userId === user.id;
+                    }
+                    return Boolean(o.email && user.email && o.email.toLowerCase() === user.email.toLowerCase());
+                  }).length;
 
                   return (
                     <tr key={user.id}>

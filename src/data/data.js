@@ -1161,6 +1161,7 @@ export const seedUsers = [
 export const seedOrders = [
   {
     id: "PM88392101",
+    userId: "u-user",
     date: new Date(Date.now() - 3 * 86400000).toISOString(),
     customer: "Priya Sharma",
     email: "user@petmart.com",
@@ -1181,6 +1182,7 @@ export const seedOrders = [
   },
   {
     id: "PM88392102",
+    userId: "u-user",
     date: new Date(Date.now() - 1 * 86400000).toISOString(),
     customer: "Priya Sharma",
     email: "user@petmart.com",

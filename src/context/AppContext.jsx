@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   pets as seedPets,
   seedUsers,
@@ -9,26 +9,28 @@ import {
   products as seedProducts,
 } from "../data/products";
 import seedCategories from "../data/categories";
+import {
+  getStorage,
+  setStorage,
+  removeStorage,
+  getUserId,
+  getUserStorageKey,
+  getCurrentUser as getStoredCurrentUser,
+  saveCurrentUser as setStoredCurrentUser,
+  getAdminSession as getStoredAdminSession,
+  saveAdminSession as setStoredAdminSession,
+  getUserData,
+  saveUserData,
+  getUserCart,
+  saveUserCart,
+  getUserWishlist,
+  saveUserWishlist,
+  getUserOrders,
+  saveUserOrders,
+  migrateLegacyUserData
+} from "../utils/storage";
 
 const AppContext = createContext(null);
-
-const getStorage = (key, fallback) => {
-  try {
-    const item = localStorage.getItem(key);
-    return item ? JSON.parse(item) : fallback;
-  } catch (error) {
-    console.warn(`Error reading localStorage key "${key}":`, error);
-    return fallback;
-  }
-};
-
-const setStorage = (key, value) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (error) {
-    console.warn(`Error saving to localStorage key "${key}":`, error);
-  }
-};
 
 const categoryImageFallbacks = {
   pets: "/images/categories/pets.jpg",
@@ -148,15 +150,15 @@ const getUsersWithSeedAccounts = () => {
 };
 
 const getCustomerSession = () => {
-  const storedUser = getStorage("petmart_current_user", null);
+  const storedUser = getStoredCurrentUser();
   return storedUser?.role === "admin" ? null : storedUser;
 };
 
 const getAdminSession = () => {
-  const storedAdmin = getStorage("petmart_admin_session", null);
+  const storedAdmin = getStoredAdminSession();
   if (storedAdmin?.role === "admin") return storedAdmin;
 
-  const legacyUser = getStorage("petmart_current_user", null);
+  const legacyUser = getStoredCurrentUser();
   return legacyUser?.role === "admin"
     ? { id: legacyUser.id, name: legacyUser.name, email: legacyUser.email, role: "admin" }
     : null;
@@ -190,9 +192,27 @@ export function AppProvider({ children }) {
   const [pets, setPets] = useState(getPetsWithMigration);
   const [products, setProducts] = useState(() => getCatalogWithImageFallbacks(getProductsWithMigration()));
   const [categories, setCategories] = useState(getCategoriesWithMigration);
-  const [cart, setCart] = useState(() => getStorage("petmart_cart", []));
-  const [wishlist, setWishlist] = useState(() => getStorage("petmart_wishlist", []));
-  const [orders, setOrders] = useState(() => getStorage("petmart_orders", seedOrders));
+
+  // Active user ID ref to track authenticated context and prevent cross-account state leakage
+  const activeUserIdRef = useRef(currentUser?.id || "guest");
+
+  // Orders initialized with migration to guarantee user-level isolation
+  const [orders, setOrders] = useState(() => {
+    const initialUser = getCustomerSession();
+    const initialUsers = getUsersWithSeedAccounts();
+    return migrateLegacyUserData(initialUser, initialUsers, seedOrders) || getStorage("petmart_orders", seedOrders);
+  });
+
+  // Isolated Cart and Wishlist states (loaded specifically for the active authenticated user)
+  const [cart, setCart] = useState(() => {
+    const initialUser = getCustomerSession();
+    return getUserCart(initialUser?.id || "guest");
+  });
+  const [wishlist, setWishlist] = useState(() => {
+    const initialUser = getCustomerSession();
+    return getUserWishlist(initialUser?.id || "guest");
+  });
+
   const [settings, setSettings] = useState(() => getStorage("petmart_settings", initialSettings));
   const [reviews, setReviews] = useState(() => getStorage("petmart_reviews", []));
 
@@ -201,18 +221,27 @@ export function AppProvider({ children }) {
   const [toast, setToast] = useState(null);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
 
-  // Sync to LocalStorage
+  // Sync Global & Administrative States to LocalStorage
   useEffect(() => setStorage("petmart_users", users), [users]);
-  useEffect(() => setStorage("petmart_current_user", currentUser), [currentUser]);
-  useEffect(() => setStorage("petmart_admin_session", adminSession), [adminSession]);
+  useEffect(() => setStoredCurrentUser(currentUser), [currentUser]);
+  useEffect(() => setStoredAdminSession(adminSession), [adminSession]);
   useEffect(() => setStorage("petmart_pets", pets), [pets]);
   useEffect(() => setStorage("petmart_products", products), [products]);
   useEffect(() => setStorage("petmart_categories", categories), [categories]);
-  useEffect(() => setStorage("petmart_cart", cart), [cart]);
-  useEffect(() => setStorage("petmart_wishlist", wishlist), [wishlist]);
   useEffect(() => setStorage("petmart_orders", orders), [orders]);
   useEffect(() => setStorage("petmart_settings", settings), [settings]);
   useEffect(() => setStorage("petmart_reviews", reviews), [reviews]);
+
+  // Reload isolated cart & wishlist whenever the authenticated user changes (prevents state leakage)
+  useEffect(() => {
+    const currentId = currentUser?.id || "guest";
+    if (activeUserIdRef.current !== currentId) {
+      activeUserIdRef.current = currentId;
+      setCart(getUserCart(currentId));
+      setWishlist(getUserWishlist(currentId));
+      setCoupon(null);
+    }
+  }, [currentUser?.id]);
 
   useEffect(() => {
     const syncFromAnotherTab = (event) => {
@@ -241,7 +270,18 @@ export function AppProvider({ children }) {
       (u) => String(u.email || "").trim().toLowerCase() === normalizedEmail && String(u.password || "") === normalizedPassword
     );
     if (!user || user.role === "admin") return false;
+
+    activeUserIdRef.current = user.id;
     setCurrentUser(user);
+    setStoredCurrentUser(user);
+
+    // Load that user's specific cart, wishlist, and reset transient coupon
+    const userCart = getUserCart(user.id);
+    const userWishlist = getUserWishlist(user.id);
+    setCart(userCart);
+    setWishlist(userWishlist);
+    setCoupon(null);
+
     notify(`Welcome back, ${user.name.split(" ")[0]}!`);
     return user;
   };
@@ -255,18 +295,29 @@ export function AppProvider({ children }) {
         String(user.password || "") === normalizedPassword
     );
     if (!admin) return false;
-    setAdminSession({ id: admin.id, name: admin.name, email: admin.email, role: admin.role });
+    const session = { id: admin.id, name: admin.name, email: admin.email, role: admin.role };
+    setAdminSession(session);
+    setStoredAdminSession(session);
     notify(`Welcome to the admin portal, ${admin.name.split(" ")[0]}!`);
     return admin;
   };
 
   const logout = () => {
+    activeUserIdRef.current = "guest";
     setCurrentUser(null);
+    setStoredCurrentUser(null);
+
+    // Clear in-memory cart, wishlist, and coupon so nothing leaks to the next session
+    setCart([]);
+    setWishlist([]);
+    setCoupon(null);
+
     notify("You have logged out successfully.", "info");
   };
 
   const adminLogout = () => {
     setAdminSession(null);
+    setStoredAdminSession(null);
     notify("Admin session ended.", "info");
   };
 
@@ -278,8 +329,9 @@ export function AppProvider({ children }) {
       notify("An account with this email already exists.", "error");
       return false;
     }
+    const newUserId = "u-" + Date.now();
     const newUser = {
-      id: "u-" + Date.now(),
+      id: newUserId,
       name: userData.fullName || userData.name,
       email: userData.email.trim(),
       phone: userData.phone || "",
@@ -300,8 +352,23 @@ export function AppProvider({ children }) {
         }
       ]
     };
+
+    // Initialize isolated storage record for new customer
+    saveUserData(newUserId, {
+      cart: [],
+      wishlist: [],
+      orders: [],
+      profile: newUser
+    });
+
     setUsers((prev) => [...prev, newUser]);
+    activeUserIdRef.current = newUserId;
     setCurrentUser(newUser);
+    setStoredCurrentUser(newUser);
+    setCart([]);
+    setWishlist([]);
+    setCoupon(null);
+
     notify("Registration successful! Welcome to PetMart.");
     return true;
   };
@@ -311,6 +378,7 @@ export function AppProvider({ children }) {
     const updated = { ...currentUser, ...updatedFields };
     setCurrentUser(updated);
     setUsers((prev) => prev.map((u) => (u.id === currentUser.id ? updated : u)));
+    saveUserData(currentUser.id, { profile: updated });
     notify("Profile updated successfully!");
   };
 
@@ -329,35 +397,52 @@ export function AppProvider({ children }) {
     notify("Address removed.");
   };
 
-  // Cart Operations
+  // Cart Operations (user-isolated)
   const addCart = (item, qty = 1) => {
+    const userId = currentUser?.id || "guest";
     setCart((prev) => {
       const existing = prev.some((i) => i.id === item.id);
+      let updated;
       if (existing) {
-        return prev.map((i) =>
+        updated = prev.map((i) =>
           i.id === item.id ? { ...i, qty: i.qty + qty } : i
         );
+      } else {
+        updated = [...prev, { ...item, qty }];
       }
-      return [...prev, { ...item, qty }];
+      saveUserCart(userId, updated);
+      return updated;
     });
     notify(`Added "${item.name}" to cart.`);
   };
 
   const updateQty = (id, qty) => {
+    const userId = currentUser?.id || "guest";
     if (qty <= 0) {
       removeCart(id);
       return;
     }
-    setCart((prev) => prev.map((i) => (i.id === id ? { ...i, qty } : i)));
+    setCart((prev) => {
+      const updated = prev.map((i) => (i.id === id ? { ...i, qty } : i));
+      saveUserCart(userId, updated);
+      return updated;
+    });
   };
 
   const removeCart = (id) => {
-    setCart((prev) => prev.filter((i) => i.id !== id));
+    const userId = currentUser?.id || "guest";
+    setCart((prev) => {
+      const updated = prev.filter((i) => i.id !== id);
+      saveUserCart(userId, updated);
+      return updated;
+    });
     notify("Item removed from cart.", "info");
   };
 
   const clearCart = () => {
+    const userId = currentUser?.id || "guest";
     setCart([]);
+    saveUserCart(userId, []);
     setCoupon(null);
   };
 
@@ -417,22 +502,31 @@ export function AppProvider({ children }) {
     return Math.max(0, cartSubtotal - couponDiscountAmount + deliveryFee + taxAmount);
   }, [cartSubtotal, couponDiscountAmount, deliveryFee, taxAmount, cart]);
 
-  // Wishlist Operations
+  // Wishlist Operations (user-isolated)
   const toggleWish = (item) => {
+    const userId = currentUser?.id || "guest";
     setWishlist((prev) => {
       const exists = prev.some((i) => i.id === item.id);
+      let updated;
       if (exists) {
         notify(`Removed "${item.name}" from wishlist.`, "info");
-        return prev.filter((i) => i.id !== item.id);
+        updated = prev.filter((i) => i.id !== item.id);
       } else {
         notify(`Added "${item.name}" to wishlist!`);
-        return [...prev, item];
+        updated = [...prev, item];
       }
+      saveUserWishlist(userId, updated);
+      return updated;
     });
   };
 
   const removeWish = (id) => {
-    setWishlist((prev) => prev.filter((i) => i.id !== id));
+    const userId = currentUser?.id || "guest";
+    setWishlist((prev) => {
+      const updated = prev.filter((i) => i.id !== id);
+      saveUserWishlist(userId, updated);
+      return updated;
+    });
     notify("Removed from wishlist.", "info");
   };
 
@@ -442,18 +536,22 @@ export function AppProvider({ children }) {
   };
 
   const clearWishlist = () => {
+    const userId = currentUser?.id || "guest";
     setWishlist([]);
+    saveUserWishlist(userId, []);
     notify("Wishlist cleared.", "info");
   };
 
-  // Orders Management
+  // Orders Management (user-isolated placement and customer/admin synchronization)
   const placeOrder = (customerDetails, paymentMethod) => {
+    const userId = currentUser?.id || "guest";
     const newOrder = {
       id: "PM" + Date.now(),
+      userId,
       date: new Date().toISOString(),
       customer: customerDetails.fullName,
-      email: customerDetails.email,
-      phone: customerDetails.phone,
+      email: customerDetails.email || currentUser?.email || "",
+      phone: customerDetails.phone || currentUser?.phone || "",
       address: `${customerDetails.address}, ${customerDetails.city}, ${customerDetails.state} - ${customerDetails.pincode}`,
       items: [...cart],
       subtotal: cartSubtotal,
@@ -467,6 +565,11 @@ export function AppProvider({ children }) {
     };
 
     setOrders((prev) => [newOrder, ...prev]);
+
+    // Save order into the placing customer's isolated account history
+    const existingUserOrders = getUserOrders(userId);
+    saveUserOrders(userId, [newOrder, ...existingUserOrders]);
+
     clearCart();
     notify("Order placed successfully! Congratulations 🎉");
     return newOrder;
@@ -476,15 +579,42 @@ export function AppProvider({ children }) {
     setOrders((prev) =>
       prev.map((o) => (o.id === orderId ? { ...o, status: "Cancelled" } : o))
     );
+    if (currentUser?.id) {
+      const existingUserOrders = getUserOrders(currentUser.id);
+      saveUserOrders(
+        currentUser.id,
+        existingUserOrders.map((o) => (o.id === orderId ? { ...o, status: "Cancelled" } : o))
+      );
+    }
     notify("Order has been cancelled.", "info");
   };
 
   const updateOrderStatus = (orderId, newStatus) => {
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o))
-    );
+    setOrders((prev) => {
+      const updated = prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o));
+      const target = updated.find((o) => o.id === orderId);
+      if (target?.userId) {
+        const targetUserOrders = getUserOrders(target.userId);
+        saveUserOrders(
+          target.userId,
+          targetUserOrders.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o))
+        );
+      }
+      return updated;
+    });
     notify(`Order #${orderId} status changed to "${newStatus}".`);
   };
+
+  // Filtered orders belonging strictly to the authenticated customer
+  const userOrders = useMemo(() => {
+    if (!currentUser) return [];
+    return orders.filter((o) => {
+      if (o.userId && currentUser.id) {
+        return o.userId === currentUser.id;
+      }
+      return Boolean(o.email && currentUser.email && o.email.toLowerCase() === currentUser.email.toLowerCase());
+    });
+  }, [orders, currentUser]);
 
   const addReview = (review) => {
     const newReview = {
@@ -654,6 +784,7 @@ export function AppProvider({ children }) {
       cart,
       wishlist,
       orders,
+      userOrders,
       settings,
       reviews,
       coupon,
@@ -714,6 +845,7 @@ export function AppProvider({ children }) {
       cart,
       wishlist,
       orders,
+      userOrders,
       settings,
       coupon,
       toast,

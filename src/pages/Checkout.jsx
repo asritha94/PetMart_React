@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   CreditCard,
@@ -61,6 +61,23 @@ export default function Checkout() {
   });
   const [upiId, setUpiId] = useState("petparent@okhdfcbank");
 
+  // Keep shipping & payment identity strictly synchronized with authenticated account
+  useEffect(() => {
+    const addr = currentUser?.addresses?.find((a) => a.isDefault) || currentUser?.addresses?.[0];
+    setFormData({
+      fullName: currentUser?.name || addr?.fullName || "",
+      email: currentUser?.email || "",
+      phone: currentUser?.phone || addr?.phone || "",
+      address: addr?.street || "",
+      city: addr?.city || "Hyderabad",
+      state: addr?.state || "Telangana",
+      pincode: addr?.pincode || ""
+    });
+    if (currentUser?.name) {
+      setCardInfo((prev) => ({ ...prev, name: currentUser.name }));
+    }
+  }, [currentUser?.id, currentUser?.name, currentUser?.email, currentUser?.phone]);
+
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
@@ -99,7 +116,10 @@ export default function Checkout() {
 
     // Simulate 1.2s processing delay for realism
     setTimeout(() => {
-      const order = placeOrder(formData, payMethodName);
+      const order = placeOrder(
+        { ...formData, email: currentUser?.email || formData.email },
+        payMethodName
+      );
       setIsProcessing(false);
       setCompletedOrder(order);
     }, 1200);
